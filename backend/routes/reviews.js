@@ -77,10 +77,11 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'Edit window has expired (24 hours)' });
     }
 
-    const { rating, comment, issues } = req.body;
+    const { rating, comment, issues, addedToFavorites } = req.body;
     if (rating !== undefined) review.rating = rating;
     if (comment !== undefined) review.comment = comment;
     if (issues !== undefined) review.issues = issues;
+    if (addedToFavorites !== undefined) review.addedToFavorites = addedToFavorites;
 
     await review.save();
     res.json(review);
@@ -109,6 +110,17 @@ router.get('/shop/:shopId', async (req, res) => {
   } catch (error) {
     console.error('Fetch reviews error:', error);
     res.status(500).json({ error: 'Failed to fetch reviews' });
+  }
+});
+
+// Get all reviews for the current student
+router.get('/student', async (req, res) => {
+  try {
+    if (req.user.role !== 'student') return res.status(403).json({ error: 'Unauthorized' });
+    const reviews = await Review.find({ studentId: req.user.username }).sort({ createdAt: -1 });
+    res.json(reviews);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch student reviews' });
   }
 });
 

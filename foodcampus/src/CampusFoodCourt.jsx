@@ -155,6 +155,7 @@ export default function App() {
   const [replyingReviewId, setReplyingReviewId] = useState(null);
   const [replyText, setReplyText] = useState('');
   const [editingReview, setEditingReview] = useState(null);
+  const [userReviews, setUserReviews] = useState({}); // orderId -> review object
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -265,7 +266,7 @@ export default function App() {
   useEffect(() => {
     let intervalId;
     if (view !== 'login' && user.id) {
-      const fetchOrders = async () => {
+      const fetchOrdersAndReviews = async () => {
         try {
           const token = localStorage.getItem('token');
           if (!token) return;
@@ -285,6 +286,17 @@ export default function App() {
               if (['pending', 'placed', 'accepted', 'preparing', 'ready'].includes(latestOrder.status)) {
                  setCurrentOrderProgressId(latestOrder._id);
               }
+
+              // Fetch all reviews for this student in one go
+              const rRes = await fetch('/api/reviews/student', {
+                 headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (rRes.ok) {
+                const rData = await rRes.json();
+                const reviewsMap = {};
+                rData.forEach(r => { reviewsMap[r.orderId] = r; });
+                setUserReviews(reviewsMap);
+              }
             }
           }
         } catch (err) {
@@ -292,8 +304,8 @@ export default function App() {
         }
       };
 
-      fetchOrders();
-      intervalId = setInterval(fetchOrders, 3000);
+      fetchOrdersAndReviews();
+      intervalId = setInterval(fetchOrdersAndReviews, 10000); // 10s sync
     }
     return () => clearInterval(intervalId);
   }, [view, user.id, user.role]);
@@ -426,6 +438,8 @@ export default function App() {
         })
       });
       if (res.ok) {
+        const savedReview = await res.json();
+        setUserReviews(prev => ({ ...prev, [reviewOrderId]: savedReview }));
         setReviewedOrderIds(prev => new Set([...prev, reviewOrderId]));
         if (reviewRating >= 4) {
           setReviewStep('followup-good');
@@ -444,29 +458,69 @@ export default function App() {
     setReviewSubmitting(false);
   };
 
-  const handleEditReview = async () => {
-    if (!editingReview) return;
+  const handleSaveFavorite = async () => {
+    if (!reviewOrderId) return;
+    const existingReview = userReviews[reviewOrderId];
+    if (!existingReview) return;
+
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/reviews/${editingReview._id}`, {
+      const res = await fetch(`/api/reviews/${existingReview._id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ addedToFavorites: true })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setUserReviews(prev => ({ ...prev, [reviewOrderId]: updated }));
+        setReviewStep('done');
+      }
+    } catch (err) {
+      console.error('Favorite error:', err);
+    }
+  };
+
+  const handleEditReview = (orderId) => {
+    const review = userReviews[orderId];
+    if (!review) return;
+
+    setReviewOrderId(orderId);
+    setReviewRating(review.rating);
+    setReviewComment(review.comment);
+    setReviewIssues(review.issues || []);
+    setReviewStep('rate');
+    setShowReviewPopup(true);
+  };
+
+  const handleUpdateReview = async () => {
+    if (!reviewOrderId || reviewRating === 0) return;
+    const existingReview = userReviews[reviewOrderId];
+    if (!existingReview) return;
+
+    setReviewSubmitting(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/reviews/${existingReview._id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          rating: editingReview.rating,
-          comment: editingReview.comment,
-          issues: editingReview.issues,
+          rating: reviewRating,
+          comment: reviewComment,
+          issues: reviewIssues,
         })
       });
       if (res.ok) {
-        setEditingReview(null);
-        alert('Review updated!');
+        const updated = await res.json();
+        setUserReviews(prev => ({ ...prev, [reviewOrderId]: updated }));
+        setReviewStep('done');
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to edit review');
+        alert(data.error || 'Failed to update review');
       }
     } catch (err) {
-      console.error('Review edit error:', err);
+      console.error('Review update error:', err);
     }
+    setReviewSubmitting(false);
   };
 
   const closeReviewPopup = () => {
@@ -810,11 +864,23 @@ export default function App() {
                     </ul>
                     <div className="flex justify-between items-center pt-3 border-t border-white/5">
                       <span className="text-lg font-black">₹{order.total}</span>
-                      {order.expectedPreparationTime && (
-                        <span className="text-xs text-gray-400 font-bold">
-                          ⏱ Est. {order.expectedPreparationTime} min
-                        </span>
-                      )}
+                      <div className="flex items-center gap-4">
+                        {order.status === 'completed' && userReviews[order._id] && 
+                          (Date.now() - new Date(userReviews[order._id].createdAt).getTime()) < 24 * 60 * 60 * 1000 && (
+                            <button 
+                              onClick={() => handleEditReview(order._id)}
+                              className="text-[10px] font-black text-orange-500 uppercase tracking-widest hover:text-orange-400 transition-colors"
+                            >
+                              Edit Review
+                            </button>
+                          )
+                        }
+                        {order.expectedPreparationTime && (
+                          <span className="text-xs text-gray-400 font-bold">
+                            ⏱ Est. {order.expectedPreparationTime} min
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))
@@ -1269,11 +1335,11 @@ export default function App() {
                       Skip
                     </button>
                     <button
-                      onClick={handleSubmitReview}
+                      onClick={userReviews[reviewOrderId] ? handleUpdateReview : handleSubmitReview}
                       disabled={reviewRating === 0 || reviewSubmitting}
                       className="flex-1 bg-gradient-to-r from-yellow-500 to-orange-500 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest hover:from-yellow-400 hover:to-orange-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-lg shadow-orange-500/20"
                     >
-                      {reviewSubmitting ? 'Submitting...' : 'Submit Review'}
+                      {reviewSubmitting ? 'Saving...' : userReviews[reviewOrderId] ? 'Update Review' : 'Submit Review'}
                     </button>
                   </div>
                 </div>
@@ -1293,7 +1359,7 @@ export default function App() {
                       Maybe Later
                     </button>
                     <button
-                      onClick={() => setReviewStep('done')}
+                      onClick={handleSaveFavorite}
                       className="flex-1 bg-gradient-to-r from-pink-500 to-red-500 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest hover:from-pink-400 hover:to-red-400 transition-all shadow-lg shadow-red-500/20"
                     >
                       ❤️ Add to Favorites
